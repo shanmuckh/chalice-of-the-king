@@ -1,0 +1,70 @@
+# Production backend (e.g. EC2): Redis + pre-built backend image from GHCR + Caddy (auto HTTPS).
+# Values come from .env (created by setup-ec2-backend.sh):
+#   docker compose -f docker-compose.backend.yml pull
+#   docker compose -f docker-compose.backend.yml up -d
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: chalice_redis
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: always
+    networks:
+      - app_network
+
+  backend:
+    image: ghcr.io/${GITHUB_USER:-shanmuckh}/chalice-backend:latest
+    container_name: chalice_backend
+    environment:
+      - NODE_ENV=${NODE_ENV:-production}
+      - PORT=3001
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
+      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:5173}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - RATE_LIMIT_WINDOW_MS=${RATE_LIMIT_WINDOW_MS:-1000}
+      - RATE_LIMIT_MAX_REQUESTS=${RATE_LIMIT_MAX_REQUESTS:-5}
+    # Only reachable through Caddy
+    expose:
+      - "3001"
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - backend_logs:/app/logs
+    restart: always
+    networks:
+      - app_network
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: chalice_caddy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      - DOMAIN=${DOMAIN:-localhost}
+    depends_on:
+      - backend
+    restart: always
+    networks:
+      - app_network
+
+volumes:
+  redis_data:
+  backend_logs:
+  caddy_data:
+  caddy_config:
+
+networks:
+  app_network:
+    driver: bridge
